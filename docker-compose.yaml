@@ -2,33 +2,49 @@ version: '3.8'
 
 services:
   keycloak_db:
-    image: postgres:14
+    container_name: keycloak_db
+    image: library/postgres:14
     environment:
       POSTGRES_DB: keycloak_db
       POSTGRES_USER: keycloak_user
       POSTGRES_PASSWORD: keycloak_password
+    healthcheck:
+      test: pg_isready -d keycloak_db
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     volumes:
       - ./postgres-keycloak-data:/var/lib/postgresql/data
     ports:
-      - "5433:5432"
+      - "5432:5432"
+
   keycloak:
-    image: quay.io/keycloak/keycloak:21.1
+    image: quay.io/keycloak/keycloak:20.0.2
+    container_name: keycloak
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://keycloak_db:5432/keycloak_db
       KC_DB_USERNAME: keycloak_user
       KC_DB_PASSWORD: keycloak_password
+      KC_DB_SCHEMA: public
     command: 
-      - start-dev
-      - --import-realm
+      - start-dev --auto-build --db postgres --hostname-strict-https false --hostname-strict false --proxy edge --http-enabled true --import-realm --spi-user-profile-legacy-user-profile-read-only-attributes *_RES_ACCESS_MODE
     volumes:
       - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
     ports:
       - "8080:8080"
     depends_on:
-      - keycloak_db
+      keycloak_db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://0.0.0.0:8080/realms/reports-realm"]
+      start_period: 10s
+      interval: 30s
+      retries: 3
+      timeout: 5s
+
   frontend:
     build:
       context: ./frontend
@@ -37,6 +53,20 @@ services:
       - "3000:3000"
     environment:
       REACT_APP_API_URL: http://localhost:8000
-      REACT_APP_KEYCLOAK_URL: http://localhost:8080
+      REACT_APP_KEYCLOAK_URL: http://keycloak:8080
       REACT_APP_KEYCLOAK_REALM: reports-realm
       REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+
+  report_api:
+    build:
+      context: ./api/report-api
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    depends_on:
+      - keycloak
+    environment:
+      WEB_API_KEYCLOAK_URL: http://keycloak:8080
+      WEB_API_KEYCLOAK_REALM: reports-realm
+      WEB_API_KEYCLOAK_CLIENT_ID: reports-api
+      ASPNETCORE_HTTP_PORTS: 8000
